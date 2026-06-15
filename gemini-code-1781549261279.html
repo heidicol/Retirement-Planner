@@ -1,0 +1,476 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Retirement Planner">
+<meta name="theme-color" content="#2C5F8A">
+<title>Retirement & Travel Planner</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #F7F6F3; color: #333; padding-bottom: 30px; }
+  #root { min-height: 100vh; }
+  .tabs-strip { display: flex; gap: 8px; overflow-x: auto; padding: 14px 16px; background: #2C5F8A; }
+  .tab-btn { padding: 8px 16px; border-radius: 20px; border: none; font-weight: 600; font-size: 13px; cursor: pointer; white-space: nowrap; }
+  .card { background: #fff; border-radius: 12px; padding: 16px; margin: 12px 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); border: 1px solid #EAE8E3; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .input-group { margin-bottom: 12px; }
+  .input-group label { display: block; font-size: 12px; color: #666; font-weight: 600; margin-bottom: 4px; }
+  input, select { width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #DCD9D2; font-size: 14px; background: #fff; }
+  .metric-label { font-size: 12px; color: #666; margin-bottom: 4px; font-weight: 500; }
+  .metric-val { font-size: 20px; font-weight: 700; color: #111; }
+  .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: bold; margin-left: 6px; }
+  #save-toast { position: fixed; bottom: 20px; right: 16px; background: #1B5E42; color: #fff; font-size: 12px; font-weight: 600; padding: 8px 14px; border-radius: 20px; opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 9999; }
+  #save-toast.show { opacity: 1; }
+  #err { position: fixed; top: 0; left: 0; right: 0; background: #7a1e1e; color: #fff; font-size: 12px; font-family: monospace; padding: 12px; z-index: 99999; white-space: pre-wrap; word-break: break-all; max-height: 40vh; overflow-y: auto; display: none; }
+</style>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js"></script>
+<script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js"></script>
+</head>
+<body>
+<div id="err"></div>
+<div id="root"></div>
+<div id="save-toast">✓ Changes saved locally</div>
+
+<script>
+window.onerror = function(msg, src, line, col, err) {
+  var el = document.getElementById('err');
+  el.style.display = 'block';
+  el.textContent = 'SYSTEM CONTEXT ERROR: ' + msg + '\nLine: ' + line + '\nCol: ' + col;
+  return false;
+};
+
+try {
+  const React = window.React;
+  const ReactDOM = window.ReactDOM;
+  const { ComposedChart, Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } = window.Recharts;
+
+  // Local Storage Namespace keys
+  const STORAGE_KEY = "RETIREMENT_PLANNER_V10_DATA";
+
+  const DEFAULTS = {
+    currentAge: 48,
+    retireAge: 57,
+    currentPot: 650000,
+    currentISA: 120000,
+    monthlyContribution: 2500,
+    isaContribution: 1666,
+    growthRate: 5.0,
+    inflationRate: 2.5,
+    living: 36000,
+    aptCost: 4500, // Spain property maintenance overhead costs
+    flexTravel: true,
+    offPeakDiscount: 20
+  };
+
+  const INITIAL_WISH_LIST = [
+    { id: "w1", name: "Antarctica Expedition Cruise", emoji: "🧊", tier: "Luxury", est: 28000, notes: "Includes wildlife photography & Drake passage arrangements." },
+    { id: "w2", name: "Nile River Cruise", emoji: "🇪🇬", tier: "Premium", est: 11000, notes: "Luxor & Aswan premium itinerary for family." },
+    { id: "w3", name: "China Multi-City Tour", emoji: "🇨🇳", tier: "Mid-range", est: 9500, notes: "Beijing, Chengdu, and Xi'an regional trip." },
+    { id: "w4", name: "New Zealand South Island Road Trip", emoji: "🇳🇿", tier: "Premium", est: 14000, notes: "Campervan & scenic photography routes." },
+    { id: "w5", name: "Amalfi Coast & Southern Italy", emoji: "🌊", tier: "Mid-range", est: 6500, notes: "Positano, Capri, and coastal excursions." }
+  ];
+
+  function loadState() {
+    try {
+      const v = localStorage.getItem(STORAGE_KEY);
+      return v ? JSON.parse(v) : null;
+    } catch(e) { return null; }
+  }
+
+  function saveState(settings, trips, wishList) {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ settings, trips, wishList }));
+      const t = document.getElementById('save-toast');
+      t.classList.add('show');
+      setTimeout(() => t.classList.remove('show'), 1500);
+    } catch(e) {}
+  }
+
+  function App() {
+    const saved = loadState();
+    const [s, setS] = React.useState(saved?.settings || DEFAULTS);
+    const [tab, setTab] = React.useState("Inputs");
+    const [wishList, setWishList] = React.useState(saved?.wishList || INITIAL_WISH_LIST);
+    const [trips, setTrips] = React.useState(saved?.trips || [
+      { wishId: "w3", year: 2026 },
+      { wishId: "w1", year: 2028 },
+      { wishId: "w2", year: 2030 }
+    ]);
+
+    // Custom configuration forms state
+    const [newTripName, setNewTripName] = React.useState("");
+    const [newTripCost, setNewTripCost] = React.useState("");
+    const [newTripTier, setNewTripTier] = React.useState("Mid-range");
+    const [newTripEmoji, setNewTripEmoji] = React.useState("✈️");
+
+    React.useEffect(() => {
+      saveState(s, trips, wishList);
+    }, [s, trips, wishList]);
+
+    const updateSetting = (key, val) => {
+      setS(prev => ({ ...prev, [key]: Number(val) || val }));
+    };
+
+    const addCustomTrip = () => {
+      if (!newTripName || !newTripCost) return;
+      const customId = "custom_" + Date.now();
+      const item = {
+        id: customId,
+        name: newTripName,
+        emoji: newTripEmoji,
+        tier: newTripTier,
+        est: parseInt(newTripCost) || 5000,
+        notes: "User configured milestone travel project."
+      };
+      setWishList(prev => [...prev, item]);
+      setNewTripName("");
+      setNewTripCost("");
+    };
+
+    // Calculate projection algorithms 
+    const yearsToRetire = Math.max(0, s.retireAge - s.currentAge);
+    let potAtRetirement = s.currentPot;
+    let isaAtRetirement = s.currentISA;
+
+    // Phase 1: Accumulation Engine
+    const monthlyNetRate = (s.growthRate / 100) / 12;
+    for (let i = 0; i < yearsToRetire * 12; i++) {
+      potAtRetirement = (potAtRetirement + s.monthlyContribution) * (1 + monthlyNetRate);
+      isaAtRetirement = (isaAtRetirement + s.isaContribution) * (1 + monthlyNetRate);
+    }
+
+    // Phase 2: Yearly Decumulation Sequence
+    const chartData = [];
+    let currentYear = new Date().getFullYear();
+    let currentPotTrack = potAtRetirement;
+    let currentIsaTrack = isaAtRetirement;
+    let cashBufferReserve = 25000; // Static baseline unexpected expense buffer
+
+    for (let age = s.retireAge; age <= 85; age++) {
+      let yearOffset = age - s.retireAge;
+      let targetYear = currentYear + yearsToRetire + yearOffset;
+
+      // Adjust for inflation compound effects
+      const inflationFactor = Math.pow(1 + s.inflationRate / 100, yearsToRetire + yearOffset);
+      
+      // Calculate active targeted milestone trip expenditures for this specific calculation year
+      let baselineTripCosts = 0;
+      trips.forEach(t => {
+        if (parseInt(t.year) === targetYear) {
+          const match = wishList.find(w => w.id === t.wishId);
+          if (match) {
+            let cost = match.est;
+            if (s.flexTravel && match.tier !== "Luxury") {
+              cost = cost * (1 - (s.offPeakDiscount / 100));
+            }
+            baselineTripCosts += cost;
+          }
+        }
+      });
+
+      const adjustedLiving = s.living * inflationFactor;
+      const adjustedApt = s.aptCost * inflationFactor;
+      const totalYearlyOutflow = adjustedLiving + adjustedApt + (baselineTripCosts * inflationFactor);
+
+      // Simple flat UK State pension assumption from age 67 onwards
+      const statePensionIncome = (age >= 67) ? (11500 * inflationFactor) : 0;
+      const deficit = Math.max(0, totalYearlyOutflow - statePensionIncome);
+
+      // Pull from accounts (ISA balance preferred first to maintain maximum tax shelter inside regular Pot)
+      if (currentIsaTrack >= deficit) {
+        currentIsaTrack -= deficit;
+      } else {
+        const remainingDeficit = deficit - currentIsaTrack;
+        currentIsaTrack = 0;
+        currentPotTrack = Math.max(0, currentPotTrack - remainingDeficit);
+      }
+
+      // Grow underlying assets for the upcoming iteration cycle
+      currentIsaTrack *= (1 + (s.growthRate - s.inflationRate) / 100);
+      currentPotTrack *= (1 + (s.growthRate - s.inflationRate) / 100);
+
+      chartData.push({
+        age: age,
+        year: targetYear,
+        "SIPP Pension Portfolio": Math.round(currentPotTrack),
+        "ISA Portfolio": Math.round(currentIsaTrack),
+        "Target Total Spending": Math.round(totalYearlyOutflow),
+        "State Pension Inflow": Math.round(statePensionIncome)
+      });
+    }
+
+    return (
+      React.createElement("div", null,
+        // Header block element
+        React.createElement("div", { style: { background: "#2C5F8A", padding: "16px", color: "#fff" } },
+          React.createElement("h1", { style: { fontSize: "20px", marginBottom: "4px" } }, "Retirement & Travel Planner v10"),
+          React.createElement("p", { style: { fontSize: "12px", opacity: 0.85 } }, "Integrated SIPP Accumulation, Overseas Assets, and Milestone Travel Profiles")
+        ),
+
+        // Navigation tab bar
+        React.createElement("div", { className: "tabs-strip" },
+          ["Inputs", "Milestone Wish List", "Schedule Plan", "Projections Chart"].map(t => (
+            React.createElement("button", {
+              key: t,
+              className: "tab-btn",
+              onClick: () => setTab(t),
+              style: {
+                background: tab === t ? "#fff" : "rgba(255,255,255,0.2)",
+                color: tab === t ? "#2C5F8A" : "#fff"
+              }
+            }, t)
+          ))
+        ),
+
+        // Tab Window 1: Base Parameters 
+        tab === "Inputs" && React.createElement("div", null,
+          React.createElement("div", { className: "card" },
+            React.createElement("h3", { style: { marginBottom: "14px", fontSize: "15px" } }, "Timeline & Current Balances"),
+            React.createElement("div", { className: "grid-2" },
+              React.createElement("div", { className: "input-group" },
+                React.createElement("label", null, "Current Age"),
+                React.createElement("input", { type: "number", value: s.currentAge, onChange: e => updateSetting("currentAge", e.target.value) })
+              ),
+              React.createElement("div", { className: "input-group" },
+                React.createElement("label", null, "Target Retirement Age"),
+                React.createElement("input", { type: "number", value: s.retireAge, onChange: e => updateSetting("retireAge", e.target.value) })
+              )
+            ),
+            React.createElement("div", { className: "grid-2" },
+              React.createElement("div", { className: "input-group" },
+                React.createElement("label", null, "SIPP Net Balance (£)"),
+                React.createElement("input", { type: "number", value: s.currentPot, onChange: e => updateSetting("currentPot", e.target.value) })
+              ),
+              React.createElement("div", { className: "input-group" },
+                React.createElement("label", null, "ISA Net Balance (£)"),
+                React.createElement("input", { type: "number", value: s.currentISA, onChange: e => updateSetting("currentISA", e.target.value) })
+              )
+            ),
+            React.createElement("div", { className: "grid-2" },
+              React.createElement("div", { className: "input-group" },
+                React.createElement("label", null, "Monthly Pension Saver (£)"),
+                React.createElement("input", { type: "number", value: s.monthlyContribution, onChange: e => updateSetting("monthlyContribution", e.target.value) })
+              ),
+              React.createElement("div", { className: "input-group" },
+                React.createElement("label", null, "Monthly ISA Saver (£)"),
+                React.createElement("input", { type: "number", value: s.isaContribution, onChange: e => updateSetting("isaContribution", e.target.value) })
+              )
+            )
+          ),
+
+          React.createElement("div", { className: "card" },
+            React.createElement("h3", { style: { marginBottom: "14px", fontSize: "15px" } }, "Post-Retirement Base Costs & Financial Market Rules"),
+            React.createElement("div", { className: "grid-2" },
+              React.createElement("div", { className: "input-group" },
+                React.createElement("label", null, "Annual UK Living Budget (£)"),
+                React.createElement("input", { type: "number", value: s.living, onChange: e => updateSetting("living", e.target.value) })
+              ),
+              React.createElement("div", { className: "input-group" },
+                React.createElement("label", null, "Spain Fixed Asset Cost (£/yr)"),
+                React.createElement("input", { type: "number", value: s.aptCost, onChange: e => updateSetting("aptCost", e.target.value) })
+              )
+            ),
+            React.createElement("div", { className: "grid-2" },
+              React.createElement("div", { className: "input-group" },
+                React.createElement("label", null, "Nominal Growth Estimate (%)"),
+                React.createElement("input", { type: "number", step: "0.1", value: s.growthRate, onChange: e => updateSetting("growthRate", e.target.value) })
+              ),
+              React.createElement("div", { className: "input-group" },
+                React.createElement("label", null, "Long-term Inflation (%)"),
+                React.createElement("input", { type: "number", step: "0.1", value: s.inflationRate, onChange: e => updateSetting("inflationRate", e.target.value) })
+              )
+            )
+          ),
+
+          React.createElement("div", { className: "card" },
+            React.createElement("h3", { style: { marginBottom: "10px", fontSize: "15px" } }, "Calculated Wealth at Age " + s.retireAge),
+            React.createElement("div", { className: "grid-2", style: { marginTop: "10px", background: "#F4F7F9", padding: "12px", borderRadius: "8px" } },
+              React.createElement("div", null,
+                React.createElement("div", { className: "metric-label" }, "Estimated SIPP Capital"),
+                React.createElement("div", { className: "metric-val" }, "£" + Math.round(potAtRetirement).toLocaleString())
+              ),
+              React.createElement("div", null,
+                React.createElement("div", { className: "metric-label" }, "Estimated ISA Capital"),
+                React.createElement("div", { className: "metric-val" }, "£" + Math.round(isaAtRetirement).toLocaleString())
+              )
+            )
+          )
+        ),
+
+        // Tab Window 2: Destination Profiles
+        tab === "Milestone Wish List" && React.createElement("div", null,
+          React.createElement("div", { className: "card" },
+            React.createElement("h3", { style: { marginBottom: "12px", fontSize: "15px" } }, "Create Custom Travel Project"),
+            React.createElement("div", { className: "grid-2" },
+              React.createElement("div", { className: "input-group" },
+                React.createElement("label", null, "Destination Name"),
+                React.createElement("input", { type: "text", placeholder: "e.g., Japan Autumn Tour", value: newTripName, onChange: e => setNewTripName(e.target.value) })
+              ),
+              React.createElement("div", { className: "input-group" },
+                React.createElement("label", null, "Baseline Budget Plan (£)"),
+                React.createElement("input", { type: "number", placeholder: "8500", value: newTripCost, onChange: e => setNewTripCost(e.target.value) })
+              )
+            ),
+            React.createElement("div", { className: "grid-2" },
+              React.createElement("div", { className: "input-group" },
+                React.createElement("label", null, "Pricing Tier / Profile"),
+                React.createElement("select", { value: newTripTier, onChange: e => setNewTripTier(e.target.value) },
+                  React.createElement("option", { value: "Mid-range" }, "Mid-range (Eligible for flexibility discounts)"),
+                  React.createElement("option", { value: "Premium" }, "Premium (Eligible for flexibility discounts)"),
+                  React.createElement("option", { value: "Luxury" }, "Luxury (Fixed rate structure)")
+                )
+              ),
+              React.createElement("div", { className: "input-group" },
+                React.createElement("label", null, "Context Icon"),
+                React.createElement("select", { value: newTripEmoji, onChange: e => setNewTripEmoji(e.target.value) },
+                  React.createElement("option", { value: "✈️" }, "✈️ Aviation"),
+                  React.createElement("option", { value: "🧊" }, "🧊 Polar / Cold"),
+                  React.createElement("option", { value: "🏯" }, "🏯 Cultural Heritage"),
+                  React.createElement("option", { value: "📸" }, "📸 Photography focused")
+                )
+              )
+            ),
+            React.createElement("button", {
+              onClick: addCustomTrip,
+              style: { width: "100%", padding: "10px", background: "#1B5E42", color: "#fff", border: "none", borderRadius: "8px", fontWeight: "bold", cursor: "pointer", marginTop: "4px" }
+            }, "+ Save to Database Wishlist")
+          ),
+
+          React.createElement("div", null,
+            React.createElement("h4", { style: { margin: "14px 16px 6px", fontSize: "13px", color: "#666" } }, "Active Registry Catalog Items"),
+            wishList.map(item => (
+              React.createElement("div", { key: item.id, className: "card", style: { marginBottom: "8px" } },
+                React.createElement("div", { style: { display: "flex", justifyContent: "between", alignItems: "center" } },
+                  React.createElement("div", { style: { fontSize: "16px", fontWeight: "700" } }, 
+                    item.emoji + " " + item.name,
+                    React.createElement("span", {
+                      className: "badge",
+                      style: {
+                        background: item.tier === "Luxury" ? "#E0D4F7" : item.tier === "Premium" ? "#FFEAD2" : "#E2F0D9",
+                        color: item.tier === "Luxury" ? "#4A2391" : item.tier === "Premium" ? "#8A4F00" : "#2E6930"
+                      }
+                    }, item.tier)
+                  ),
+                  React.createElement("div", { style: { fontSize: "15px", fontWeight: "700", color: "#2C5F8A" } }, "£" + item.est.toLocaleString())
+                ),
+                React.createElement("p", { style: { fontSize: "12px", color: "#666", marginTop: "6px", fontStyle: "italic" } }, item.notes)
+              )
+            ))
+          )
+        ),
+
+        // Tab Window 3: Timeline Router Scheduling
+        tab === "Schedule Plan" && React.createElement("div", null,
+          React.createElement("div", { className: "card" },
+            React.createElement("h3", { style: { marginBottom: "12px", fontSize: "15px" } }, "Timeline Calendar Assignments"),
+            React.createElement("p", { style: { fontSize: "12px", color: "#666", marginBottom: "12px" } }, "Map registry indexes to precise historical calendar years to measure cash drawer draws:"),
+            
+            trips.map((t, idx) => {
+              const currentMatch = wishList.find(w => w.id === t.wishId);
+              return React.createElement("div", { key: idx, style: { display: "flex", gap: "8px", alignItems: "center", marginBottom: "10px", background: "#F9F9F8", padding: "8px", borderRadius: "6px" } },
+                React.createElement("select", {
+                  value: t.wishId,
+                  onChange: e => {
+                    const next = [...trips];
+                    next[idx].wishId = e.target.value;
+                    setTrips(next);
+                  },
+                  style: { flex: 2, padding: "6px" }
+                }, wishList.map(w => React.createElement("option", { key: w.id, value: w.id }, w.emoji + " " + w.name))),
+                
+                React.createElement("input", {
+                  type: "number",
+                  value: t.year,
+                  onChange: e => {
+                    const next = [...trips];
+                    next[idx].year = parseInt(e.target.value) || currentYear;
+                    setTrips(next);
+                  },
+                  style: { flex: 1, padding: "6px" }
+                }),
+
+                React.createElement("button", {
+                  onClick: () => setTrips(prev => prev.filter((_, i) => i !== idx)),
+                  style: { background: "#992222", color: "#fff", border: "none", padding: "6px 10px", borderRadius: "6px", cursor: "pointer" }
+                }, "X")
+              );
+            }),
+
+            React.createElement("button", {
+              onClick: () => setTrips(prev => [...prev, { wishId: wishList[0]?.id || "", year: currentYear + yearsToRetire }]),
+              style: { width: "100%", padding: "10px", background: "#2C5F8A", color: "#fff", border: "none", borderRadius: "8px", fontWeight: "bold", cursor: "pointer", marginTop: "10px" }
+            }, "+ Add Calendar Event Point")
+          )
+        ),
+
+        // Tab Window 4: Composed Capital Projections Display Panel
+        tab === "Projections Chart" && React.createElement("div", null,
+          React.createElement("div", { className: "card" },
+            React.createElement("h3", { style: { marginBottom: "6px", fontSize: "15px" } }, "Asset Drawdown Curves (Inflation Adjusted)"),
+            React.createElement("p", { style: { fontSize: "11px", color: "#666", marginBottom: "16px" } }, "Maintains a baseline asset pool overview alongside mapped active project spikes."),
+            
+            React.createElement("div", { style: { width: "100%", height: 300, background: "#fff", position: "relative" } },
+              React.createElement(ResponsiveContainer, { width: "100%", height: "100%" },
+                React.createElement(ComposedChart, { data: chartData, margin: { top: 10, right: 10, left: -20, bottom: 10 } },
+                  React.createElement(CartesianGrid, { strokeDasharray: "3 3", stroke: "#EAEAE6" }),
+                  React.createElement(XAxis, { dataKey: "age", tick: { fontSize: 10 } }),
+                  React.createElement(YAxis, { tick: { fontSize: 9 } }),
+                  React.createElement(Tooltip, { formatter: (value) => "£" + value.toLocaleString() }),
+                  React.createElement(Legend, { wrapperStyle: { fontSize: "11px", pt: 10 } }),
+                  React.createElement(Bar, { dataKey: "Target Total Spending", fill: "#C97D60" }),
+                  React.createElement(Line, { type: "monotone", dataKey: "SIPP Pension Portfolio", stroke: "#2C5F8A", strokeWidth: 2.5, dot: false }),
+                  React.createElement(Line, { type: "monotone", dataKey: "ISA Portfolio", stroke: "#40916C", strokeWidth: 2, dot: false })
+                )
+              )
+            )
+          ),
+
+          React.createElement("div", { className: "card", style: { overflowX: "auto" } },
+            React.createElement("h3", { style: { marginBottom: "10px", fontSize: "14px" } }, "Detailed Annual Projection Ledger"),
+            React.createElement("table", { style: { width: "100%", borderCollapse: "collapse", fontSize: "11px", textAlign: "left" } },
+              React.createElement("thead", null,
+                React.createElement("tr", { style: { borderBottom: "2px solid #DDD" } },
+                  React.createElement("th", { style: { padding: "6px" } }, "Age"),
+                  React.createElement("th", null, "Year"),
+                  React.createElement("th", null, "SIPP Pool"),
+                  React.createElement("th", null, "ISA Pool"),
+                  React.createElement("th", null, "Total Outflow"),
+                  React.createElement("th", null, "State Pension")
+                )
+              ),
+              React.createElement("tbody", null,
+                chartData.filter((_, i) => i % 3 === 0 || i === chartData.length - 1).map((row, i) => (
+                  React.createElement("tr", { key: i, style: { borderBottom: "1px solid #EEE" } },
+                    React.createElement("td", { style: { padding: "6px", fontWeight: "6px" } }, row.age),
+                    React.createElement("td", null, row.year),
+                    React.createElement("td", null, "£" + row["SIPP Pension Portfolio"].toLocaleString()),
+                    React.createElement("td", null, "£" + row["ISA Portfolio"].toLocaleString()),
+                    React.createElement("td", { style: { color: "#B54D26", fontWeight: "600" } }, "£" + row["Target Total Spending"].toLocaleString()),
+                    React.createElement("td", null, "£" + row["State Pension Inflow"].toLocaleString())
+                  )
+                ))
+              )
+            )
+          )
+        )
+      )
+    );
+  }
+
+  // Final React creation mount sequence execution loop handling
+  const container = document.getElementById('root');
+  const root = ReactDOM.createRoot(container);
+  root.render(React.createElement(App));
+
+} catch (e) {
+  document.getElementById('err').style.display = 'block';
+  document.getElementById('err').textContent += '\nCOMPILER EXECUTION RUNTIME ERROR: ' + e.message + '\n' + (e.stack || '');
+}
+</script>
+</body>
+</html>
